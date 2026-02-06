@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
 from fpdf import FPDF
+from fpdf.errors import FPDFException
 
 APP_TITLE = "Visible.PC-style Portfolio CRM (Free + JSON)"
 DATA_DIR = "data"
@@ -49,6 +50,19 @@ UPDATE_COLUMNS = [
 ]
 
 
+def _normalize_pdf_text(value: str | None) -> str:
+    text = str(value) if value is not None else "-"
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\t", " ").replace("\u00a0", " ")
+    # Strip low control chars that can break PDF rendering while preserving newlines.
+    text = "".join(ch for ch in text if ch == "\n" or ord(ch) >= 32)
+    return text or "-"
+
+
+def _safe_pdf_slug(raw: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in raw).strip("_") or "company"
+
+
 class UpdatePDF(FPDF):
     def header(self):
         self.set_font("helvetica", "B", 14)
@@ -56,15 +70,17 @@ class UpdatePDF(FPDF):
         self.ln(12)
 
     def add_section(self, title: str, value: str):
-        safe_value = (value or "-").replace("\r\n", "\n")
-        # Reset X before each multi_cell; with fpdf2 defaults, consecutive multi_cell calls
-        # can otherwise leave the cursor at the right margin and cause width=0 rendering errors.
+        safe_title = _normalize_pdf_text(title)
+        safe_value = _normalize_pdf_text(value)
+        usable_width = max(self.w - self.l_margin - self.r_margin, 10)
+
         self.set_x(self.l_margin)
         self.set_font("helvetica", "B", 11)
-        self.multi_cell(0, 7, title, new_x="LMARGIN", new_y="NEXT")
+        self.multi_cell(usable_width, 7, safe_title)
+
         self.set_x(self.l_margin)
         self.set_font("helvetica", "", 10)
-        self.multi_cell(0, 6, safe_value, new_x="LMARGIN", new_y="NEXT", wrapmode="CHAR")
+        self.multi_cell(usable_width, 6, safe_value, wrapmode="CHAR")
         self.ln(1)
 
     def footer(self):
@@ -84,6 +100,18 @@ def ensure_storage() -> None:
     if not os.path.exists(UPDATES_PATH):
         with open(UPDATES_PATH, "w", encoding="utf-8") as f:
             json.dump([], f, indent=2)
+
+
+def _json_safe(value):
+    if value is None:
+        return ""
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat() if not pd.isna(value) else ""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if pd.isna(value):
+        return ""
+    return value
 
 
 def _read_json_list(path: str) -> list[dict]:
@@ -126,16 +154,16 @@ def load_updates() -> pd.DataFrame:
 
 def save_companies(df: pd.DataFrame) -> None:
     payload = []
-    for row in df.fillna("").to_dict(orient="records"):
-        payload.append({col: row.get(col, "") for col in COMPANY_COLUMNS})
+    for row in df.to_dict(orient="records"):
+        payload.append({col: _json_safe(row.get(col, "")) for col in COMPANY_COLUMNS})
     _write_json_list(COMPANIES_PATH, payload)
     st.cache_data.clear()
 
 
 def save_updates(df: pd.DataFrame) -> None:
     payload = []
-    for row in df.fillna("").to_dict(orient="records"):
-        payload.append({col: row.get(col, "") for col in UPDATE_COLUMNS})
+    for row in df.to_dict(orient="records"):
+        payload.append({col: _json_safe(row.get(col, "")) for col in UPDATE_COLUMNS})
     _write_json_list(UPDATES_PATH, payload)
     st.cache_data.clear()
 
@@ -166,7 +194,7 @@ def add_update(row: dict) -> None:
 
 
 def generate_pdf(update_data: dict) -> str:
-    company_slug = update_data["company_name"].replace(" ", "_")
+    company_slug = _safe_pdf_slug(str(update_data.get("company_name", "company")))
     filename = f"update_{company_slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     output_path = os.path.join(PDF_DIR, filename)
 
@@ -194,7 +222,10 @@ def generate_pdf(update_data: dict) -> str:
     ]
 
     for title, value in order:
-        pdf.add_section(title, str(value))
+        try:
+            pdf.add_section(title, str(value))
+        except FPDFException:
+            pdf.add_section(title, _normalize_pdf_text(value).encode("ascii", "replace").decode("ascii"))
 
     pdf.output(output_path)
     return output_path
