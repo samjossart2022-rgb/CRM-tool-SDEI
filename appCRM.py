@@ -56,10 +56,15 @@ class UpdatePDF(FPDF):
         self.ln(12)
 
     def add_section(self, title: str, value: str):
+        safe_value = (value or "-").replace("\r\n", "\n")
+        # Reset X before each multi_cell; with fpdf2 defaults, consecutive multi_cell calls
+        # can otherwise leave the cursor at the right margin and cause width=0 rendering errors.
+        self.set_x(self.l_margin)
         self.set_font("helvetica", "B", 11)
-        self.multi_cell(0, 7, title)
+        self.multi_cell(0, 7, title, new_x="LMARGIN", new_y="NEXT")
+        self.set_x(self.l_margin)
         self.set_font("helvetica", "", 10)
-        self.multi_cell(0, 6, value if value else "-")
+        self.multi_cell(0, 6, safe_value, new_x="LMARGIN", new_y="NEXT", wrapmode="CHAR")
         self.ln(1)
 
     def footer(self):
