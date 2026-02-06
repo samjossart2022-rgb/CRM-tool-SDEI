@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 from datetime import date, datetime, timedelta
@@ -6,10 +7,10 @@ import pandas as pd
 import streamlit as st
 from fpdf import FPDF
 
-APP_TITLE = "Visible.PC-style Portfolio CRM"
+APP_TITLE = "Visible.PC-style Portfolio CRM (Free + JSON)"
 DATA_DIR = "data"
-UPDATES_PATH = os.path.join(DATA_DIR, "company_updates.csv")
-COMPANIES_PATH = os.path.join(DATA_DIR, "companies.csv")
+UPDATES_PATH = os.path.join(DATA_DIR, "company_updates.json")
+COMPANIES_PATH = os.path.join(DATA_DIR, "companies.json")
 PDF_DIR = os.path.join(DATA_DIR, "pdf_exports")
 
 COMPANY_COLUMNS = [
@@ -72,37 +73,65 @@ def ensure_storage() -> None:
     os.makedirs(PDF_DIR, exist_ok=True)
 
     if not os.path.exists(COMPANIES_PATH):
-        pd.DataFrame(columns=COMPANY_COLUMNS).to_csv(COMPANIES_PATH, index=False)
+        with open(COMPANIES_PATH, "w", encoding="utf-8") as f:
+            json.dump([], f, indent=2)
 
     if not os.path.exists(UPDATES_PATH):
-        pd.DataFrame(columns=UPDATE_COLUMNS).to_csv(UPDATES_PATH, index=False)
+        with open(UPDATES_PATH, "w", encoding="utf-8") as f:
+            json.dump([], f, indent=2)
+
+
+def _read_json_list(path: str) -> list[dict]:
+    ensure_storage()
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data if isinstance(data, list) else []
+
+
+def _write_json_list(path: str, rows: list[dict]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
 
 
 @st.cache_data
 def load_companies() -> pd.DataFrame:
-    ensure_storage()
-    df = pd.read_csv(COMPANIES_PATH)
+    rows = _read_json_list(COMPANIES_PATH)
+    normalized = []
+    for row in rows:
+        normalized.append({col: row.get(col, "") for col in COMPANY_COLUMNS})
+    df = pd.DataFrame(normalized, columns=COMPANY_COLUMNS)
     if "next_due_date" in df.columns:
         df["next_due_date"] = pd.to_datetime(df["next_due_date"], errors="coerce")
+    if "is_active" in df.columns:
+        df["is_active"] = df["is_active"].fillna(True)
     return df
 
 
 @st.cache_data
 def load_updates() -> pd.DataFrame:
-    ensure_storage()
-    df = pd.read_csv(UPDATES_PATH)
+    rows = _read_json_list(UPDATES_PATH)
+    normalized = []
+    for row in rows:
+        normalized.append({col: row.get(col, "") for col in UPDATE_COLUMNS})
+    df = pd.DataFrame(normalized, columns=UPDATE_COLUMNS)
     if "submission_date" in df.columns:
         df["submission_date"] = pd.to_datetime(df["submission_date"], errors="coerce")
     return df
 
 
 def save_companies(df: pd.DataFrame) -> None:
-    df.to_csv(COMPANIES_PATH, index=False)
+    payload = []
+    for row in df.fillna("").to_dict(orient="records"):
+        payload.append({col: row.get(col, "") for col in COMPANY_COLUMNS})
+    _write_json_list(COMPANIES_PATH, payload)
     st.cache_data.clear()
 
 
 def save_updates(df: pd.DataFrame) -> None:
-    df.to_csv(UPDATES_PATH, index=False)
+    payload = []
+    for row in df.fillna("").to_dict(orient="records"):
+        payload.append({col: row.get(col, "") for col in UPDATE_COLUMNS})
+    _write_json_list(UPDATES_PATH, payload)
     st.cache_data.clear()
 
 
@@ -180,8 +209,7 @@ def reminder_text(company_name: str, cadence: str, secure_link: str, due_date: s
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 st.caption(
-    "Internal CRM for investment teams to onboard companies, collect secure structured updates, "
-    "run reminder sequences, and export investor-ready PDFs."
+    "100% free and controllable: local JSON files for onboarding + updates, with reminder sequences and investor PDFs."
 )
 
 ensure_storage()
@@ -317,7 +345,6 @@ with submit_tab:
                 payload["pdf_path"] = pdf_path
                 add_update(payload)
 
-                # advance next due date after successful submission
                 companies_mut = companies_df.copy()
                 idx = companies_mut.index[companies_mut["company_name"] == selected_company][0]
                 cadence = companies_mut.loc[idx, "reporting_cadence"]
@@ -383,8 +410,8 @@ with dashboard_tab:
         )
 
         st.download_button(
-            "Download unified updates CSV",
-            data=updates_df.to_csv(index=False).encode("utf-8"),
-            file_name="unified_company_updates.csv",
-            mime="text/csv",
+            "Download unified updates JSON",
+            data=json.dumps(_read_json_list(UPDATES_PATH), indent=2).encode("utf-8"),
+            file_name="unified_company_updates.json",
+            mime="application/json",
         )
