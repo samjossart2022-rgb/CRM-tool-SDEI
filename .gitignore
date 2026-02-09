@@ -1,6 +1,6 @@
 .venv/
 __pycache__/
 *.pyc
-data/*.csv
-pdf_outputs/
+data/
+*.pdf
 .streamlit/secrets.toml
