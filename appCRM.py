@@ -402,9 +402,26 @@ def get_supabase() -> Client:
     return create_client(url, key)
 
 
+def _supabase_query(fn):
+    """Run a Supabase query, surfacing the real error on failure."""
+    try:
+        return fn()
+    except Exception as exc:
+        st.error(
+            f"**Database error:** {exc}\n\n"
+            "Check that:\n"
+            "1. You ran the SQL migration in Supabase SQL Editor\n"
+            "2. Your `[supabase]` secrets (url and key) are correct\n"
+            "3. RLS policies were created (see supabase_setup.sql)"
+        )
+        st.stop()
+
+
 def load_companies() -> pd.DataFrame:
     sb = get_supabase()
-    response = sb.table("companies").select("*").order("company_name").execute()
+    response = _supabase_query(
+        lambda: sb.table("companies").select("*").order("company_name").execute()
+    )
     if not response.data:
         return pd.DataFrame(columns=COMPANY_COLUMNS)
     df = pd.DataFrame(response.data)
@@ -417,7 +434,9 @@ def load_companies() -> pd.DataFrame:
 
 def load_updates() -> pd.DataFrame:
     sb = get_supabase()
-    response = sb.table("company_updates").select("*").order("submission_date", desc=True).execute()
+    response = _supabase_query(
+        lambda: sb.table("company_updates").select("*").order("submission_date", desc=True).execute()
+    )
     if not response.data:
         return pd.DataFrame(columns=UPDATE_COLUMNS)
     df = pd.DataFrame(response.data)
