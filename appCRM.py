@@ -1,5 +1,5 @@
+import io
 import json
-import os
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -7,17 +7,13 @@ import pandas as pd
 import streamlit as st
 from fpdf import FPDF
 from fpdf.errors import FPDFException
+from supabase import create_client, Client
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 APP_TITLE = "Portfolio CRM"
 APP_SUBTITLE = "Portfolio company updates, reporting & investor exports"
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(_SCRIPT_DIR, "data")
-UPDATES_PATH = os.path.join(DATA_DIR, "company_updates.json")
-COMPANIES_PATH = os.path.join(DATA_DIR, "companies.json")
-PDF_DIR = os.path.join(DATA_DIR, "pdf_exports")
 
 COMPANY_COLUMNS = [
     "company_id",
@@ -51,7 +47,6 @@ UPDATE_COLUMNS = [
     "meeting_minutes",
     "data_warehouse_link",
     "submitted_by",
-    "pdf_path",
 ]
 
 # ---------------------------------------------------------------------------
@@ -312,7 +307,7 @@ hr {
 """
 
 # ---------------------------------------------------------------------------
-# PDF generation helpers
+# PDF generation helpers (in-memory, no file storage needed)
 # ---------------------------------------------------------------------------
 
 
@@ -361,51 +356,58 @@ class UpdatePDF(FPDF):
         self.cell(0, 10, f"Page {self.page_no()}  |  Generated {datetime.now().strftime('%Y-%m-%d')}", align="C")
 
 
+def generate_pdf_bytes(update_data: dict) -> bytes:
+    """Generate a PDF report in memory and return the raw bytes."""
+    pdf = UpdatePDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    order = [
+        ("Company", update_data.get("company_name", "")),
+        ("Reporting Period", update_data.get("reporting_period", "")),
+        ("Submitted", update_data.get("submission_date", "")),
+        ("Submitted By", update_data.get("submitted_by", "")),
+        ("Revenue", update_data.get("revenue", "")),
+        ("Expenses", update_data.get("expenses", "")),
+        ("Cash", update_data.get("cash", "")),
+        ("Runway (months)", update_data.get("runway_months", "")),
+        ("Wins", update_data.get("wins", "")),
+        ("Challenges", update_data.get("challenges", "")),
+        ("Asks", update_data.get("asks", "")),
+        ("Investment Update", update_data.get("investment_update", "")),
+        ("Narrative", update_data.get("narrative", "")),
+        ("Meeting Agenda", update_data.get("meeting_agenda", "")),
+        ("Meeting Minutes", update_data.get("meeting_minutes", "")),
+        ("Data Warehouse Link", update_data.get("data_warehouse_link", "")),
+    ]
+
+    for title, value in order:
+        try:
+            pdf.add_section(title, str(value))
+        except FPDFException:
+            pdf.add_section(title, _normalize_pdf_text(value).encode("ascii", "replace").decode("ascii"))
+
+    return pdf.output()
+
+
 # ---------------------------------------------------------------------------
-# Data layer
+# Supabase data layer
 # ---------------------------------------------------------------------------
 
 
-def ensure_storage() -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(PDF_DIR, exist_ok=True)
-    if not os.path.exists(COMPANIES_PATH):
-        with open(COMPANIES_PATH, "w", encoding="utf-8") as f:
-            json.dump([], f, indent=2)
-    if not os.path.exists(UPDATES_PATH):
-        with open(UPDATES_PATH, "w", encoding="utf-8") as f:
-            json.dump([], f, indent=2)
+@st.cache_resource
+def get_supabase() -> Client:
+    url = st.secrets["supabase"]["url"]
+    key = st.secrets["supabase"]["key"]
+    return create_client(url, key)
 
 
-def _json_safe(value):
-    if value is None:
-        return ""
-    if isinstance(value, pd.Timestamp):
-        return value.isoformat() if not pd.isna(value) else ""
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if pd.isna(value):
-        return ""
-    return value
-
-
-def _read_json_list(path: str) -> list[dict]:
-    ensure_storage()
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return data if isinstance(data, list) else []
-
-
-def _write_json_list(path: str, rows: list[dict]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
-
-
-@st.cache_data
 def load_companies() -> pd.DataFrame:
-    rows = _read_json_list(COMPANIES_PATH)
-    normalized = [{col: row.get(col, "") for col in COMPANY_COLUMNS} for row in rows]
-    df = pd.DataFrame(normalized, columns=COMPANY_COLUMNS)
+    sb = get_supabase()
+    response = sb.table("companies").select("*").order("company_name").execute()
+    if not response.data:
+        return pd.DataFrame(columns=COMPANY_COLUMNS)
+    df = pd.DataFrame(response.data)
     if "next_due_date" in df.columns:
         df["next_due_date"] = pd.to_datetime(df["next_due_date"], errors="coerce")
     if "is_active" in df.columns:
@@ -413,26 +415,42 @@ def load_companies() -> pd.DataFrame:
     return df
 
 
-@st.cache_data
 def load_updates() -> pd.DataFrame:
-    rows = _read_json_list(UPDATES_PATH)
-    normalized = [{col: row.get(col, "") for col in UPDATE_COLUMNS} for row in rows]
-    df = pd.DataFrame(normalized, columns=UPDATE_COLUMNS)
+    sb = get_supabase()
+    response = sb.table("company_updates").select("*").order("submission_date", desc=True).execute()
+    if not response.data:
+        return pd.DataFrame(columns=UPDATE_COLUMNS)
+    df = pd.DataFrame(response.data)
     if "submission_date" in df.columns:
         df["submission_date"] = pd.to_datetime(df["submission_date"], errors="coerce")
     return df
 
 
-def save_companies(df: pd.DataFrame) -> None:
-    payload = [{col: _json_safe(row.get(col, "")) for col in COMPANY_COLUMNS} for row in df.to_dict(orient="records")]
-    _write_json_list(COMPANIES_PATH, payload)
-    st.cache_data.clear()
+def add_company(row: dict) -> None:
+    sb = get_supabase()
+    sb.table("companies").insert(row).execute()
 
 
-def save_updates(df: pd.DataFrame) -> None:
-    payload = [{col: _json_safe(row.get(col, "")) for col in UPDATE_COLUMNS} for row in df.to_dict(orient="records")]
-    _write_json_list(UPDATES_PATH, payload)
-    st.cache_data.clear()
+def add_update(row: dict) -> None:
+    sb = get_supabase()
+    sb.table("company_updates").insert(row).execute()
+
+
+def update_company_due_date(company_id: str, next_due: str) -> None:
+    sb = get_supabase()
+    sb.table("companies").update({"next_due_date": next_due}).eq("company_id", company_id).execute()
+
+
+def delete_company(company_id: str) -> None:
+    """Remove a company and all its updates (cascade via DB foreign key)."""
+    sb = get_supabase()
+    sb.table("companies").delete().eq("company_id", company_id).execute()
+
+
+def delete_update(update_id: str) -> None:
+    """Remove a single update."""
+    sb = get_supabase()
+    sb.table("company_updates").delete().eq("update_id", update_id).execute()
 
 
 # ---------------------------------------------------------------------------
@@ -451,80 +469,6 @@ def cadence_to_delta(cadence: str) -> timedelta:
 
 def next_due_from_today(cadence: str) -> date:
     return date.today() + cadence_to_delta(cadence)
-
-
-def add_company(row: dict) -> None:
-    companies = load_companies()
-    out = pd.concat([companies, pd.DataFrame([row], columns=COMPANY_COLUMNS)], ignore_index=True)
-    save_companies(out)
-
-
-def add_update(row: dict) -> None:
-    updates = load_updates()
-    out = pd.concat([updates, pd.DataFrame([row], columns=UPDATE_COLUMNS)], ignore_index=True)
-    save_updates(out)
-
-
-def delete_company(company_id: str) -> None:
-    """Remove a company by ID and all its associated updates."""
-    companies = load_companies()
-    companies = companies[companies["company_id"] != company_id]
-    save_companies(companies)
-    # Also remove any updates for this company
-    updates = load_updates()
-    updates = updates[updates["company_id"] != company_id]
-    save_updates(updates)
-
-
-def delete_update(update_id: str) -> None:
-    """Remove a single update by ID."""
-    updates = load_updates()
-    # Clean up associated PDF file
-    match = updates[updates["update_id"] == update_id]
-    if not match.empty:
-        pdf_path = match.iloc[0].get("pdf_path", "")
-        if pdf_path and os.path.exists(pdf_path):
-            os.remove(pdf_path)
-    updates = updates[updates["update_id"] != update_id]
-    save_updates(updates)
-
-
-def generate_pdf(update_data: dict) -> str:
-    company_slug = _safe_pdf_slug(str(update_data.get("company_name", "company")))
-    filename = f"update_{company_slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    output_path = os.path.join(PDF_DIR, filename)
-
-    pdf = UpdatePDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-
-    order = [
-        ("Company", update_data["company_name"]),
-        ("Reporting Period", update_data["reporting_period"]),
-        ("Submitted", update_data["submission_date"]),
-        ("Submitted By", update_data["submitted_by"]),
-        ("Revenue", update_data["revenue"]),
-        ("Expenses", update_data["expenses"]),
-        ("Cash", update_data["cash"]),
-        ("Runway (months)", update_data["runway_months"]),
-        ("Wins", update_data["wins"]),
-        ("Challenges", update_data["challenges"]),
-        ("Asks", update_data["asks"]),
-        ("Investment Update", update_data["investment_update"]),
-        ("Narrative", update_data["narrative"]),
-        ("Meeting Agenda", update_data["meeting_agenda"]),
-        ("Meeting Minutes", update_data["meeting_minutes"]),
-        ("Data Warehouse Link", update_data["data_warehouse_link"]),
-    ]
-
-    for title, value in order:
-        try:
-            pdf.add_section(title, str(value))
-        except FPDFException:
-            pdf.add_section(title, _normalize_pdf_text(value).encode("ascii", "replace").decode("ascii"))
-
-    pdf.output(output_path)
-    return output_path
 
 
 def reminder_text(company_name: str, cadence: str, due_date: str) -> str:
@@ -568,7 +512,6 @@ st.set_page_config(
 )
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-ensure_storage()
 companies_df = load_companies()
 updates_df = load_updates()
 
@@ -581,7 +524,6 @@ with st.sidebar:
     st.caption("Manage portfolio companies, collect structured updates, and generate investor-ready reports.")
     st.divider()
 
-    # Quick stats in sidebar
     total_companies = len(companies_df)
     total_updates = len(updates_df)
     overdue_count = (
@@ -598,7 +540,7 @@ with st.sidebar:
         st.markdown("**Overdue:** 0")
 
     st.divider()
-    st.caption("Built with Streamlit. Data stored locally as JSON.")
+    st.caption("Data stored in Supabase (PostgreSQL).")
 
 # ---------------------------------------------------------------------------
 # Top metrics bar
@@ -607,13 +549,10 @@ with st.sidebar:
 st.markdown(f"## {APP_TITLE}")
 st.caption(APP_SUBTITLE)
 
-pdf_count = len([f for f in os.listdir(PDF_DIR) if f.endswith(".pdf")])
-
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3 = st.columns(3)
 m1.metric("Portfolio Companies", total_companies)
 m2.metric("Total Updates", total_updates)
 m3.metric("Updates Overdue", overdue_count, delta=f"-{overdue_count}" if overdue_count else None, delta_color="inverse")
-m4.metric("PDFs Exported", pdf_count)
 
 st.markdown("")  # spacer
 
@@ -672,7 +611,7 @@ with onboard_tab:
             st.info(f"Access token: `{token}` — Share this securely with the company contact.")
             st.rerun()
 
-    # Companies table with delete
+    # Companies list with delete
     if not companies_df.empty:
         st.markdown("")
         st.subheader("Portfolio Companies")
@@ -801,28 +740,28 @@ with submit_tab:
                     "meeting_minutes": meeting_minutes.strip(),
                     "data_warehouse_link": data_warehouse_link.strip(),
                     "submitted_by": submitted_by.strip(),
-                    "pdf_path": "",
                 }
-                pdf_path = generate_pdf(payload)
-                payload["pdf_path"] = pdf_path
                 add_update(payload)
 
                 # Update next due date
-                companies_mut = companies_df.copy()
-                idx = companies_mut.index[companies_mut["company_name"] == selected_company][0]
-                comp_cadence = companies_mut.loc[idx, "reporting_cadence"]
-                companies_mut.loc[idx, "next_due_date"] = str(next_due_from_today(comp_cadence))
-                save_companies(companies_mut)
+                comp_cadence = company_lookup[selected_company]["reporting_cadence"]
+                update_company_due_date(
+                    company_lookup[selected_company]["company_id"],
+                    str(next_due_from_today(comp_cadence)),
+                )
 
-                st.success(f"Update for **{selected_company}** saved successfully. PDF generated.")
-                with open(pdf_path, "rb") as f:
-                    st.download_button(
-                        "Download PDF Report",
-                        data=f,
-                        file_name=os.path.basename(pdf_path),
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
+                st.success(f"Update for **{selected_company}** saved successfully.")
+
+                # Generate PDF for immediate download
+                pdf_bytes = generate_pdf_bytes(payload)
+                slug = _safe_pdf_slug(selected_company)
+                st.download_button(
+                    "Download PDF Report",
+                    data=pdf_bytes,
+                    file_name=f"update_{slug}_{date.today().isoformat()}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
                 st.rerun()
 
 # ---- TAB 3: Reminder Sequences ----
@@ -836,7 +775,6 @@ with sequences_tab:
         today = date.today()
         due_sorted = companies_df.sort_values("next_due_date")
 
-        # Summary cards
         overdue_list = []
         upcoming_list = []
         on_track_list = []
@@ -858,7 +796,6 @@ with sequences_tab:
 
         st.markdown("---")
 
-        # Show all companies with status
         for _, row in due_sorted.iterrows():
             due_date = row["next_due_date"].date() if pd.notna(row["next_due_date"]) else today
             status = _due_status(due_date, today)
@@ -904,11 +841,9 @@ with dashboard_tab:
 
         filtered = updates_df.copy()
 
-        # Apply company filter
         if company_filter != "All Companies":
             filtered = filtered[filtered["company_name"] == company_filter]
 
-        # Apply text search
         if search.strip():
             query = search.lower().strip()
             mask = (
@@ -989,16 +924,18 @@ with dashboard_tab:
                     # Actions row: PDF download + delete
                     act1, act2, _ = st.columns([1, 1, 2])
                     with act1:
-                        if row.get("pdf_path") and os.path.exists(row["pdf_path"]):
-                            with open(row["pdf_path"], "rb") as f:
-                                st.download_button(
-                                    "Download PDF",
-                                    data=f,
-                                    file_name=os.path.basename(row["pdf_path"]),
-                                    mime="application/pdf",
-                                    key=f"pdf_{uid}",
-                                    use_container_width=True,
-                                )
+                        # Generate PDF on-demand from stored data
+                        pdf_data = row.to_dict()
+                        pdf_bytes = generate_pdf_bytes(pdf_data)
+                        slug = _safe_pdf_slug(str(row.get("company_name", "company")))
+                        st.download_button(
+                            "Download PDF",
+                            data=pdf_bytes,
+                            file_name=f"update_{slug}_{sub_date}.pdf",
+                            mime="application/pdf",
+                            key=f"pdf_{uid}",
+                            use_container_width=True,
+                        )
                     with act2:
                         confirm_key = f"confirm_del_update_{uid}"
                         if st.session_state.get(confirm_key):
@@ -1021,9 +958,10 @@ with dashboard_tab:
         st.markdown("### Export Data")
         e1, e2 = st.columns(2)
         with e1:
+            json_export = updates_df.to_dict(orient="records")
             st.download_button(
                 "Download All Updates (JSON)",
-                data=json.dumps(_read_json_list(UPDATES_PATH), indent=2).encode("utf-8"),
+                data=json.dumps(json_export, indent=2, default=str).encode("utf-8"),
                 file_name="portfolio_updates.json",
                 mime="application/json",
                 use_container_width=True,
