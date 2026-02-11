@@ -13,7 +13,8 @@ from fpdf.errors import FPDFException
 # ---------------------------------------------------------------------------
 APP_TITLE = "Portfolio CRM"
 APP_SUBTITLE = "Portfolio company updates, reporting & investor exports"
-DATA_DIR = "data"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(_SCRIPT_DIR, "data")
 UPDATES_PATH = os.path.join(DATA_DIR, "company_updates.json")
 COMPANIES_PATH = os.path.join(DATA_DIR, "companies.json")
 PDF_DIR = os.path.join(DATA_DIR, "pdf_exports")
@@ -464,6 +465,30 @@ def add_update(row: dict) -> None:
     save_updates(out)
 
 
+def delete_company(company_id: str) -> None:
+    """Remove a company by ID and all its associated updates."""
+    companies = load_companies()
+    companies = companies[companies["company_id"] != company_id]
+    save_companies(companies)
+    # Also remove any updates for this company
+    updates = load_updates()
+    updates = updates[updates["company_id"] != company_id]
+    save_updates(updates)
+
+
+def delete_update(update_id: str) -> None:
+    """Remove a single update by ID."""
+    updates = load_updates()
+    # Clean up associated PDF file
+    match = updates[updates["update_id"] == update_id]
+    if not match.empty:
+        pdf_path = match.iloc[0].get("pdf_path", "")
+        if pdf_path and os.path.exists(pdf_path):
+            os.remove(pdf_path)
+    updates = updates[updates["update_id"] != update_id]
+    save_updates(updates)
+
+
 def generate_pdf(update_data: dict) -> str:
     company_slug = _safe_pdf_slug(str(update_data.get("company_name", "company")))
     filename = f"update_{company_slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
@@ -647,43 +672,41 @@ with onboard_tab:
             st.info(f"Access token: `{token}` — Share this securely with the company contact.")
             st.rerun()
 
-    # Companies table
+    # Companies table with delete
     if not companies_df.empty:
         st.markdown("")
         st.subheader("Portfolio Companies")
 
-        display_df = companies_df.copy()
-        if "next_due_date" in display_df.columns:
-            display_df["next_due_date"] = display_df["next_due_date"].dt.strftime("%Y-%m-%d")
-        display_df["is_active"] = display_df["is_active"].map({True: "Active", False: "Inactive"})
+        for _, comp_row in companies_df.iterrows():
+            due_str = comp_row["next_due_date"].strftime("%Y-%m-%d") if pd.notna(comp_row["next_due_date"]) else "N/A"
+            active_label = "Active" if comp_row["is_active"] else "Inactive"
+            cid = comp_row["company_id"]
 
-        st.dataframe(
-            display_df[
-                [
-                    "company_name",
-                    "contact_name",
-                    "contact_email",
-                    "portfolio_manager",
-                    "fund",
-                    "reporting_cadence",
-                    "next_due_date",
-                    "is_active",
-                ]
-            ].rename(
-                columns={
-                    "company_name": "Company",
-                    "contact_name": "Contact",
-                    "contact_email": "Email",
-                    "portfolio_manager": "PM",
-                    "fund": "Fund",
-                    "reporting_cadence": "Cadence",
-                    "next_due_date": "Next Due",
-                    "is_active": "Status",
-                }
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+            with st.expander(f"{comp_row['company_name']}  —  {comp_row['reporting_cadence']}  |  Next due: {due_str}"):
+                ic1, ic2 = st.columns(2)
+                with ic1:
+                    st.markdown(f"**Contact:** {comp_row['contact_name']} ({comp_row['contact_email']})")
+                    st.markdown(f"**Portfolio Manager:** {comp_row['portfolio_manager']}")
+                with ic2:
+                    st.markdown(f"**Fund:** {comp_row['fund']}")
+                    st.markdown(f"**Status:** {active_label}  |  **Token:** `{comp_row['access_token']}`")
+
+                # Delete with confirmation
+                confirm_key = f"confirm_del_company_{cid}"
+                if st.session_state.get(confirm_key):
+                    st.warning(f"Are you sure you want to delete **{comp_row['company_name']}** and all its updates?")
+                    yes_col, no_col, _ = st.columns([1, 1, 4])
+                    if yes_col.button("Yes, delete", key=f"yes_del_{cid}", type="primary"):
+                        delete_company(cid)
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+                    if no_col.button("Cancel", key=f"no_del_{cid}"):
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+                else:
+                    if st.button("Delete company", key=f"del_{cid}"):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
     else:
         st.markdown(
             '<div class="empty-state"><h3>No companies onboarded yet</h3>'
@@ -939,6 +962,7 @@ with dashboard_tab:
             st.markdown("### Update Details")
 
             for _, row in filtered.iterrows():
+                uid = row["update_id"]
                 sub_date = row["submission_date"].strftime("%Y-%m-%d") if pd.notna(row["submission_date"]) else "N/A"
                 with st.expander(f"{row['company_name']} — {row['reporting_period']} ({sub_date})"):
                     d1, d2 = st.columns(2)
@@ -962,16 +986,35 @@ with dashboard_tab:
                     if row.get("narrative"):
                         st.markdown(f"**Narrative:** {row['narrative']}")
 
-                    # PDF download if available
-                    if row.get("pdf_path") and os.path.exists(row["pdf_path"]):
-                        with open(row["pdf_path"], "rb") as f:
-                            st.download_button(
-                                "Download PDF",
-                                data=f,
-                                file_name=os.path.basename(row["pdf_path"]),
-                                mime="application/pdf",
-                                key=f"pdf_{row['update_id']}",
-                            )
+                    # Actions row: PDF download + delete
+                    act1, act2, _ = st.columns([1, 1, 2])
+                    with act1:
+                        if row.get("pdf_path") and os.path.exists(row["pdf_path"]):
+                            with open(row["pdf_path"], "rb") as f:
+                                st.download_button(
+                                    "Download PDF",
+                                    data=f,
+                                    file_name=os.path.basename(row["pdf_path"]),
+                                    mime="application/pdf",
+                                    key=f"pdf_{uid}",
+                                    use_container_width=True,
+                                )
+                    with act2:
+                        confirm_key = f"confirm_del_update_{uid}"
+                        if st.session_state.get(confirm_key):
+                            st.warning("Delete this update?")
+                            y_col, n_col = st.columns(2)
+                            if y_col.button("Yes", key=f"yes_del_u_{uid}", type="primary"):
+                                delete_update(uid)
+                                st.session_state.pop(confirm_key, None)
+                                st.rerun()
+                            if n_col.button("No", key=f"no_del_u_{uid}"):
+                                st.session_state.pop(confirm_key, None)
+                                st.rerun()
+                        else:
+                            if st.button("Delete update", key=f"del_u_{uid}", use_container_width=True):
+                                st.session_state[confirm_key] = True
+                                st.rerun()
 
         # Export section
         st.markdown("---")
