@@ -343,6 +343,160 @@ hr {{
 </style>
 """
 
+DARK_CSS = """
+<style>
+/* ---- Dark mode overrides ---- */
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+.main .block-container {
+    background-color: #0f172a !important;
+    color: #e2e8f0 !important;
+}
+[data-testid="stAppViewContainer"] * {
+    color: #e2e8f0;
+}
+header[data-testid="stHeader"] {
+    background: #0f172a !important;
+}
+
+/* Metric cards */
+[data-testid="stMetric"] {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+}
+[data-testid="stMetric"] label {
+    color: #94a3b8 !important;
+}
+[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    color: #f1f5f9 !important;
+}
+[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+    color: #94a3b8 !important;
+}
+
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+}
+.stTabs [data-baseweb="tab"] {
+    color: #94a3b8 !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    color: #e2e8f0 !important;
+    background: #334155 !important;
+}
+.stTabs [aria-selected="true"] {
+    background: #0f172a !important;
+    color: #f1f5f9 !important;
+}
+
+/* Forms & inputs */
+.stForm {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+}
+.stTextInput > label,
+.stTextArea > label,
+.stSelectbox > label,
+.stNumberInput > label {
+    color: #94a3b8 !important;
+}
+.stTextInput input,
+.stTextArea textarea {
+    background: #0f172a !important;
+    border-color: #475569 !important;
+    color: #e2e8f0 !important;
+}
+[data-baseweb="select"] {
+    background: #0f172a !important;
+}
+[data-baseweb="select"] * {
+    color: #e2e8f0 !important;
+    background-color: #0f172a !important;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6, .stMarkdown h2, .stMarkdown h3 {
+    color: #f1f5f9 !important;
+}
+h2 {
+    border-bottom-color: #334155 !important;
+}
+p, span, li, .stMarkdown, .stMarkdown p {
+    color: #e2e8f0 !important;
+}
+
+/* Expanders */
+.streamlit-expanderHeader {
+    background: #1e293b !important;
+    color: #e2e8f0 !important;
+}
+[data-testid="stExpander"] {
+    border-color: #334155 !important;
+}
+[data-testid="stExpander"] details {
+    background: #1e293b !important;
+}
+
+/* Dataframes */
+[data-testid="stDataFrame"] {
+    border-color: #334155 !important;
+}
+
+/* Alerts */
+.stAlert {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+}
+
+/* Buttons */
+.stDownloadButton > button {
+    background: #1e293b !important;
+    border-color: #475569 !important;
+    color: #e2e8f0 !important;
+}
+
+/* Dividers */
+hr {
+    border-color: #334155 !important;
+}
+
+/* Status badges dark adjustments */
+.status-overdue {
+    background: #451a1a !important;
+    border-color: #7f1d1d !important;
+}
+.status-upcoming {
+    background: #451a03 !important;
+    border-color: #78350f !important;
+}
+.status-on-track {
+    background: #052e16 !important;
+    border-color: #14532d !important;
+}
+
+/* Empty state */
+.empty-state {
+    color: #64748b !important;
+}
+
+/* File uploader */
+[data-testid="stFileUploader"] {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+}
+[data-testid="stFileUploader"] * {
+    color: #e2e8f0 !important;
+}
+
+/* Caption */
+.stCaption, [data-testid="stCaptionContainer"] * {
+    color: #64748b !important;
+}
+</style>
+"""
+
 # ---------------------------------------------------------------------------
 # PDF generation helpers (in-memory, no file storage needed)
 # ---------------------------------------------------------------------------
@@ -707,6 +861,9 @@ st.set_page_config(
 )
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = False
+
 companies_df = load_companies()
 updates_df = load_updates()
 
@@ -721,6 +878,11 @@ with st.sidebar:
     else:
         st.markdown("### Enterprise Institute")
     st.caption("Portfolio company updates, reporting & investor exports.")
+
+    dark_mode = st.toggle("Dark mode", value=st.session_state.dark_mode, key="dark_toggle")
+    if dark_mode != st.session_state.dark_mode:
+        st.session_state.dark_mode = dark_mode
+        st.rerun()
     st.divider()
 
     total_companies = len(companies_df)
@@ -750,6 +912,10 @@ with st.sidebar:
 
     st.divider()
     st.caption(f"Data stored in Supabase. Today is {date.today().strftime('%B %d, %Y')}.")
+
+# Apply dark mode CSS if enabled
+if st.session_state.dark_mode:
+    st.markdown(DARK_CSS, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # Top metrics bar
@@ -819,6 +985,84 @@ with onboard_tab:
             add_company(row)
             st.toast(f"{company_name.strip()} onboarded successfully!", icon="✅")
             st.rerun()
+
+    # ---- CSV Bulk Import ----
+    st.markdown("---")
+    st.subheader("Bulk Import from CSV")
+    st.markdown(
+        "Upload a CSV file to onboard multiple companies at once. "
+        "Required columns: **company_name**, **contact_name**, **contact_email**. "
+        "Optional: **portfolio_manager**, **fund**, **reporting_cadence** (Weekly/Biweekly/Monthly/Quarterly)."
+    )
+
+    csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv_import")
+    if csv_file is not None:
+        try:
+            import_df = pd.read_csv(csv_file)
+        except Exception as exc:
+            st.error(f"Could not parse CSV: {exc}")
+            import_df = None
+
+        if import_df is not None:
+            # Normalize column names to lowercase/stripped
+            import_df.columns = [c.strip().lower().replace(" ", "_") for c in import_df.columns]
+
+            required = {"company_name", "contact_name", "contact_email"}
+            missing = required - set(import_df.columns)
+            if missing:
+                st.error(f"CSV is missing required columns: **{', '.join(sorted(missing))}**")
+            else:
+                # Fill optional columns with defaults
+                if "portfolio_manager" not in import_df.columns:
+                    import_df["portfolio_manager"] = ""
+                if "fund" not in import_df.columns:
+                    import_df["fund"] = ""
+                if "reporting_cadence" not in import_df.columns:
+                    import_df["reporting_cadence"] = "Monthly"
+
+                valid_cadences = {"Weekly", "Biweekly", "Monthly", "Quarterly"}
+                import_df["reporting_cadence"] = import_df["reporting_cadence"].apply(
+                    lambda v: v.strip().title() if isinstance(v, str) and v.strip().title() in valid_cadences else "Monthly"
+                )
+
+                # Drop rows with empty required fields
+                import_df = import_df.dropna(subset=["company_name", "contact_name", "contact_email"])
+                import_df = import_df[
+                    import_df["company_name"].str.strip().astype(bool)
+                    & import_df["contact_name"].str.strip().astype(bool)
+                    & import_df["contact_email"].str.strip().astype(bool)
+                ]
+
+                st.markdown(f"**{len(import_df)} valid companies** found in file:")
+                st.dataframe(
+                    import_df[["company_name", "contact_name", "contact_email", "portfolio_manager", "fund", "reporting_cadence"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                if len(import_df) > 0 and st.button("Import all companies", type="primary", use_container_width=True):
+                    added = 0
+                    for _, r in import_df.iterrows():
+                        cad = str(r["reporting_cadence"])
+                        row = {
+                            "company_id": uuid.uuid4().hex,
+                            "company_name": str(r["company_name"]).strip(),
+                            "contact_name": str(r["contact_name"]).strip(),
+                            "contact_email": str(r["contact_email"]).strip(),
+                            "portfolio_manager": str(r.get("portfolio_manager", "")).strip(),
+                            "fund": str(r.get("fund", "")).strip(),
+                            "reporting_cadence": cad,
+                            "next_due_date": str(next_due_from_today(cad)),
+                            "access_token": uuid.uuid4().hex[:12],
+                            "is_active": True,
+                        }
+                        try:
+                            add_company(row)
+                            added += 1
+                        except Exception as exc:
+                            st.warning(f"Failed to import **{r['company_name']}**: {exc}")
+                    st.toast(f"{added} companies imported successfully!", icon="✅")
+                    st.rerun()
 
     # Companies list with delete
     if not companies_df.empty:
