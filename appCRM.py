@@ -772,11 +772,14 @@ def generate_bulk_pdf_bytes(updates: pd.DataFrame, companies: pd.DataFrame | Non
         pdf.set_font("helvetica", "", 9)
         pdf.set_text_color(*_SLATE)
         for i, (_, r) in enumerate(updates.iterrows(), 1):
-            cname = str(r.get("company_name", ""))
-            period = str(r.get("reporting_period", ""))
+            cname = _normalize_pdf_text(str(r.get("company_name", "")))
+            period = _normalize_pdf_text(str(r.get("reporting_period", "")))
             sdate = _format_date(r.get("submission_date"))
-            line = f"{i}.  {cname}  —  {period}  ({sdate})"
-            pdf.cell(0, 5, line, ln=True)
+            line = f"{i}.  {cname}  -  {period}  ({sdate})"
+            try:
+                pdf.cell(0, 5, line, ln=True)
+            except FPDFException:
+                pdf.cell(0, 5, line.encode("ascii", "replace").decode("ascii"), ln=True)
 
     # ---- Individual update pages ----
     for _, row in updates.iterrows():
