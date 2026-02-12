@@ -714,6 +714,67 @@ def generate_pdf_bytes(update_data: dict) -> bytes:
     return bytes(pdf.output())
 
 
+def generate_bulk_pdf_bytes(updates: pd.DataFrame) -> bytes:
+    """Generate a single PDF containing all updates, one per page."""
+    pdf = UpdatePDF()
+    pdf.set_auto_page_break(auto=True, margin=18)
+
+    for _, row in updates.iterrows():
+        data = row.to_dict()
+        pdf.add_page()
+
+        company = str(data.get("company_name", ""))
+        period = str(data.get("reporting_period", ""))
+        sub_date = _format_date(data.get("submission_date"))
+        sub_by = str(data.get("submitted_by", ""))
+
+        pdf.set_font("helvetica", "B", 18)
+        pdf.set_text_color(*_DARK)
+        pdf.cell(0, 10, _normalize_pdf_text(company), ln=True)
+        pdf.set_font("helvetica", "", 10)
+        pdf.set_text_color(*_SLATE)
+        pdf.cell(0, 6, f"{_normalize_pdf_text(period)}   |   {sub_date}   |   Submitted by {_normalize_pdf_text(sub_by)}", ln=True)
+        pdf.ln(4)
+
+        pdf._section_heading("Financial Summary")
+        kpi_rows = [
+            ("Revenue", str(data.get("revenue", ""))),
+            ("Expenses", str(data.get("expenses", ""))),
+            ("Cash on Hand", str(data.get("cash", ""))),
+            ("Runway", f"{data.get('runway_months', 'N/A')} months"),
+        ]
+        try:
+            pdf._kpi_table(kpi_rows)
+        except FPDFException:
+            for label, val in kpi_rows:
+                pdf._info_row(label, val)
+        pdf.ln(4)
+
+        progress_fields = [
+            ("Wins & Highlights", data.get("wins", "")),
+            ("Challenges & Risks", data.get("challenges", "")),
+            ("Asks from Investors", data.get("asks", "")),
+            ("Investment Update", data.get("investment_update", "")),
+        ]
+        if any(_normalize_pdf_text(str(v)) not in ("", "-") for _, v in progress_fields):
+            pdf._section_heading("Progress & Challenges")
+            for label, val in progress_fields:
+                try:
+                    pdf._text_block(label, str(val))
+                except FPDFException:
+                    pass
+
+        narrative = str(data.get("narrative", ""))
+        if _normalize_pdf_text(narrative) not in ("", "-"):
+            pdf._section_heading("Investor Narrative")
+            try:
+                pdf._text_block("", narrative)
+            except FPDFException:
+                pass
+
+    return bytes(pdf.output())
+
+
 # ---------------------------------------------------------------------------
 # Supabase data layer
 # ---------------------------------------------------------------------------
@@ -995,6 +1056,19 @@ with onboard_tab:
         "Optional: **portfolio_manager**, **fund**, **reporting_cadence** (Weekly/Biweekly/Monthly/Quarterly)."
     )
 
+    _TEMPLATE_CSV = (
+        "company_name,contact_name,contact_email,portfolio_manager,fund,reporting_cadence\n"
+        "Acme Inc.,Jane Smith,jane@acme.com,John Doe,Fund III,Monthly\n"
+        "Beta Labs,Sam Lee,sam@betalabs.io,Maria Garcia,Fund II,Quarterly\n"
+    )
+    st.download_button(
+        "Download sample CSV template",
+        data=_TEMPLATE_CSV.encode("utf-8"),
+        file_name="company_import_template.csv",
+        mime="text/csv",
+        key="csv_template_dl",
+    )
+
     csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv_import")
     if csv_file is not None:
         try:
@@ -1064,6 +1138,14 @@ with onboard_tab:
                     st.toast(f"{added} companies imported successfully!", icon="✅")
                     st.rerun()
 
+    # Build a lookup for last update date per company
+    _last_update_map = {}
+    if not updates_df.empty:
+        for cid_val, grp in updates_df.groupby("company_id"):
+            latest = grp["submission_date"].max()
+            if pd.notna(latest):
+                _last_update_map[cid_val] = latest.strftime("%b %d, %Y")
+
     # Companies list with delete
     if not companies_df.empty:
         st.markdown("")
@@ -1073,6 +1155,7 @@ with onboard_tab:
             due_str = comp_row["next_due_date"].strftime("%Y-%m-%d") if pd.notna(comp_row["next_due_date"]) else "N/A"
             active_label = "Active" if comp_row["is_active"] else "Inactive"
             cid = comp_row["company_id"]
+            last_update_str = _last_update_map.get(cid, "No updates yet")
 
             with st.expander(f"{comp_row['company_name']}  —  {comp_row['reporting_cadence']}  |  Next due: {due_str}"):
                 ic1, ic2 = st.columns(2)
@@ -1082,6 +1165,7 @@ with onboard_tab:
                 with ic2:
                     st.markdown(f"**Fund:** {comp_row['fund']}")
                     st.markdown(f"**Status:** {active_label}  |  **Token:** `{comp_row['access_token']}`")
+                st.caption(f"Last update: {last_update_str}")
 
                 confirm_key = f"confirm_del_company_{cid}"
                 if st.session_state.get(confirm_key):
@@ -1450,11 +1534,11 @@ with dashboard_tab:
         # Export section
         st.markdown("---")
         st.markdown("### Export Data")
-        e1, e2 = st.columns(2)
+        e1, e2, e3 = st.columns(3)
         with e1:
             json_export = updates_df.to_dict(orient="records")
             st.download_button(
-                "Download All Updates (JSON)",
+                "All Updates (JSON)",
                 data=json.dumps(json_export, indent=2, default=str).encode("utf-8"),
                 file_name="portfolio_updates.json",
                 mime="application/json",
@@ -1463,9 +1547,18 @@ with dashboard_tab:
         with e2:
             csv_data = updates_df.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "Download All Updates (CSV)",
+                "All Updates (CSV)",
                 data=csv_data,
                 file_name="portfolio_updates.csv",
                 mime="text/csv",
+                use_container_width=True,
+            )
+        with e3:
+            bulk_pdf = generate_bulk_pdf_bytes(updates_df)
+            st.download_button(
+                "All Updates (PDF Report)",
+                data=bulk_pdf,
+                file_name=f"portfolio_report_{date.today().isoformat()}.pdf",
+                mime="application/pdf",
                 use_container_width=True,
             )
