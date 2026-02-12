@@ -1,8 +1,11 @@
+import base64
 import io
 import json
+import os
 import uuid
 from datetime import date, datetime, timedelta
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from fpdf import FPDF
@@ -12,8 +15,10 @@ from supabase import create_client, Client
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-APP_TITLE = "Portfolio CRM"
-APP_SUBTITLE = "Portfolio company updates, reporting & investor exports"
+APP_TITLE = "Enterprise Institute"
+APP_SUBTITLE = "Portfolio Company Updates, Reporting & Investor Exports"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGO_PATH = os.path.join(_SCRIPT_DIR, "assets", "logo.png")
 
 COMPANY_COLUMNS = [
     "company_id",
@@ -49,83 +54,123 @@ UPDATE_COLUMNS = [
     "submitted_by",
 ]
 
+
+# ---------------------------------------------------------------------------
+# Logo helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_logo_base64() -> str | None:
+    if os.path.exists(LOGO_PATH):
+        with open(LOGO_PATH, "rb") as f:
+            return base64.b64encode(f.read()).decode()
+    return None
+
+
+def _watermark_css(logo_b64: str | None) -> str:
+    if not logo_b64:
+        return ""
+    return f"""
+/* ---- Watermark ---- */
+[data-testid="stMain"]::before {{
+    content: "";
+    position: fixed;
+    top: 50%;
+    left: 55%;
+    transform: translate(-50%, -50%);
+    width: 500px;
+    height: 500px;
+    background-image: url("data:image/png;base64,{logo_b64}");
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    opacity: 0.035;
+    pointer-events: none;
+    z-index: 0;
+}}
+"""
+
+
 # ---------------------------------------------------------------------------
 # Custom CSS for professional styling
 # ---------------------------------------------------------------------------
-CUSTOM_CSS = """
+
+_logo_b64 = _get_logo_base64()
+
+CUSTOM_CSS = f"""
 <style>
 /* ---- Global ---- */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-html, body, [class*="css"] {
+html, body, [class*="css"] {{
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-}
+}}
 
 /* ---- Header area ---- */
-header[data-testid="stHeader"] {
+header[data-testid="stHeader"] {{
     background: transparent;
-}
+}}
 
 /* ---- Main container ---- */
-.block-container {
+.block-container {{
     padding-top: 2rem !important;
     padding-bottom: 2rem !important;
     max-width: 1200px;
-}
+}}
 
 /* ---- Sidebar ---- */
-[data-testid="stSidebar"] {
+[data-testid="stSidebar"] {{
     background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
-}
-[data-testid="stSidebar"] * {
+}}
+[data-testid="stSidebar"] * {{
     color: #e2e8f0 !important;
-}
+}}
 [data-testid="stSidebar"] .stSelectbox label,
-[data-testid="stSidebar"] .stRadio label {
+[data-testid="stSidebar"] .stRadio label {{
     color: #94a3b8 !important;
     font-size: 0.8rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-weight: 600;
-}
-[data-testid="stSidebar"] hr {
+}}
+[data-testid="stSidebar"] hr {{
     border-color: #334155;
-}
+}}
 
 /* ---- Metric cards ---- */
-[data-testid="stMetric"] {
+[data-testid="stMetric"] {{
     background: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 12px;
     padding: 1rem 1.25rem;
     box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
     transition: box-shadow 0.2s ease;
-}
-[data-testid="stMetric"]:hover {
+}}
+[data-testid="stMetric"]:hover {{
     box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-}
-[data-testid="stMetric"] label {
+}}
+[data-testid="stMetric"] label {{
     color: #64748b !important;
     font-size: 0.8rem !important;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-weight: 600 !important;
-}
-[data-testid="stMetric"] [data-testid="stMetricValue"] {
+}}
+[data-testid="stMetric"] [data-testid="stMetricValue"] {{
     color: #0f172a !important;
     font-size: 2rem !important;
     font-weight: 700 !important;
-}
+}}
 
 /* ---- Tabs ---- */
-.stTabs [data-baseweb="tab-list"] {
+.stTabs [data-baseweb="tab-list"] {{
     gap: 0;
     background: #f8fafc;
     border-radius: 12px;
     padding: 4px;
     border: 1px solid #e2e8f0;
-}
-.stTabs [data-baseweb="tab"] {
+}}
+.stTabs [data-baseweb="tab"] {{
     border-radius: 8px;
     padding: 0.6rem 1.25rem;
     font-weight: 500;
@@ -134,59 +179,59 @@ header[data-testid="stHeader"] {
     background: transparent;
     border: none;
     transition: all 0.15s ease;
-}
-.stTabs [data-baseweb="tab"]:hover {
+}}
+.stTabs [data-baseweb="tab"]:hover {{
     color: #334155;
     background: #e2e8f0;
-}
-.stTabs [aria-selected="true"] {
+}}
+.stTabs [aria-selected="true"] {{
     background: #ffffff !important;
     color: #0f172a !important;
     font-weight: 600 !important;
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-}
-.stTabs [data-baseweb="tab-highlight"] {
+}}
+.stTabs [data-baseweb="tab-highlight"] {{
     display: none;
-}
-.stTabs [data-baseweb="tab-border"] {
+}}
+.stTabs [data-baseweb="tab-border"] {{
     display: none;
-}
+}}
 
 /* ---- Forms & inputs ---- */
-.stForm {
+.stForm {{
     background: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 12px;
     padding: 1.5rem !important;
     box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
+}}
 
 .stTextInput > label,
 .stTextArea > label,
 .stSelectbox > label,
-.stNumberInput > label {
+.stNumberInput > label {{
     font-weight: 500 !important;
     color: #334155 !important;
     font-size: 0.875rem !important;
     margin-bottom: 0.25rem !important;
-}
+}}
 
 .stTextInput input,
-.stTextArea textarea {
+.stTextArea textarea {{
     border-radius: 8px !important;
     border: 1px solid #cbd5e1 !important;
     font-size: 0.9rem !important;
     transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
-}
+}}
 .stTextInput input:focus,
-.stTextArea textarea:focus {
+.stTextArea textarea:focus {{
     border-color: #3b82f6 !important;
     box-shadow: 0 0 0 3px rgba(59,130,246,0.12) !important;
-}
+}}
 
 /* ---- Buttons ---- */
 .stButton > button[kind="primary"],
-.stFormSubmitButton > button {
+.stFormSubmitButton > button {{
     background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
     border: none !important;
     border-radius: 8px !important;
@@ -196,69 +241,69 @@ header[data-testid="stHeader"] {
     letter-spacing: 0.01em;
     transition: all 0.15s ease !important;
     box-shadow: 0 1px 3px rgba(37,99,235,0.3) !important;
-}
+}}
 .stButton > button[kind="primary"]:hover,
-.stFormSubmitButton > button:hover {
+.stFormSubmitButton > button:hover {{
     background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
     box-shadow: 0 4px 12px rgba(37,99,235,0.35) !important;
     transform: translateY(-1px);
-}
+}}
 
-.stDownloadButton > button {
+.stDownloadButton > button {{
     border-radius: 8px !important;
     font-weight: 500 !important;
     border: 1px solid #e2e8f0 !important;
     transition: all 0.15s ease !important;
-}
-.stDownloadButton > button:hover {
+}}
+.stDownloadButton > button:hover {{
     border-color: #3b82f6 !important;
     color: #3b82f6 !important;
-}
+}}
 
 /* ---- Expanders ---- */
-.streamlit-expanderHeader {
+.streamlit-expanderHeader {{
     font-weight: 500 !important;
     font-size: 0.95rem !important;
     color: #1e293b !important;
     background: #f8fafc;
     border-radius: 8px;
-}
+}}
 
 /* ---- Dataframes ---- */
-[data-testid="stDataFrame"] {
+[data-testid="stDataFrame"] {{
     border: 1px solid #e2e8f0;
     border-radius: 12px;
     overflow: hidden;
-}
+}}
 
 /* ---- Alert boxes ---- */
-.stAlert {
+.stAlert {{
     border-radius: 10px !important;
-}
+}}
 
 /* ---- Subheader styling ---- */
-h2 {
+h2 {{
     color: #0f172a !important;
     font-weight: 700 !important;
     font-size: 1.35rem !important;
     padding-bottom: 0.25rem;
     border-bottom: 2px solid #e2e8f0;
     margin-bottom: 1rem !important;
-}
-h3 {
+}}
+h3 {{
     color: #1e293b !important;
     font-weight: 600 !important;
     font-size: 1.1rem !important;
-}
+}}
 
 /* ---- Divider ---- */
-hr {
+hr {{
     border-color: #e2e8f0;
     margin: 1.5rem 0;
-}
+}}
 
 /* ---- Status badges ---- */
-.status-badge {
+.status-badge {{
     display: inline-block;
     padding: 0.2rem 0.65rem;
     border-radius: 9999px;
@@ -266,43 +311,35 @@ hr {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.03em;
-}
-.status-overdue {
+}}
+.status-overdue {{
     background: #fef2f2;
     color: #dc2626;
     border: 1px solid #fecaca;
-}
-.status-upcoming {
+}}
+.status-upcoming {{
     background: #fffbeb;
     color: #d97706;
     border: 1px solid #fde68a;
-}
-.status-on-track {
+}}
+.status-on-track {{
     background: #f0fdf4;
     color: #16a34a;
     border: 1px solid #bbf7d0;
-}
-
-/* ---- Section cards ---- */
-.section-card {
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    padding: 1.5rem;
-    margin-bottom: 1rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
+}}
 
 /* ---- Empty state ---- */
-.empty-state {
+.empty-state {{
     text-align: center;
     padding: 3rem 2rem;
     color: #94a3b8;
-}
-.empty-state h3 {
+}}
+.empty-state h3 {{
     color: #64748b !important;
     margin-bottom: 0.5rem;
-}
+}}
+
+{_watermark_css(_logo_b64)}
 </style>
 """
 
@@ -325,11 +362,16 @@ def _safe_pdf_slug(raw: str) -> str:
 
 class UpdatePDF(FPDF):
     def header(self):
-        self.set_font("helvetica", "B", 16)
+        # Logo in top-left if available
+        if os.path.exists(LOGO_PATH):
+            self.image(LOGO_PATH, x=10, y=8, h=12)
+            self.set_x(35)
+        self.set_font("helvetica", "B", 14)
         self.set_text_color(15, 23, 42)
-        self.cell(0, 10, "Portfolio Company Update", align="C")
+        self.cell(0, 10, "Enterprise Institute  |  Portfolio Update", align="L" if os.path.exists(LOGO_PATH) else "C")
         self.ln(6)
-        self.set_draw_color(226, 232, 240)
+        self.set_draw_color(166, 142, 100)  # Gold accent
+        self.set_line_width(0.5)
         self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
         self.ln(8)
 
@@ -353,7 +395,11 @@ class UpdatePDF(FPDF):
         self.set_y(-15)
         self.set_font("helvetica", "I", 8)
         self.set_text_color(148, 163, 184)
-        self.cell(0, 10, f"Page {self.page_no()}  |  Generated {datetime.now().strftime('%Y-%m-%d')}", align="C")
+        self.cell(
+            0, 10,
+            f"Enterprise Institute  |  Page {self.page_no()}  |  Generated {datetime.now().strftime('%Y-%m-%d')}",
+            align="C",
+        )
 
 
 def generate_pdf_bytes(update_data: dict) -> bytes:
@@ -499,7 +545,8 @@ def reminder_text(company_name: str, cadence: str, due_date: str) -> str:
         "  - Wins and challenges\n"
         "  - Asks from investors / portfolio managers\n"
         "  - Meeting agenda and minutes\n\n"
-        "Thanks for helping keep investor reporting consistent and on schedule."
+        "Thanks for helping keep investor reporting consistent and on schedule.\n\n"
+        "— Enterprise Institute"
     )
 
 
@@ -517,6 +564,11 @@ def _due_status(due_date, today) -> str:
 def _status_html(status: str) -> str:
     labels = {"overdue": "Overdue", "upcoming": "Due Soon", "on-track": "On Track", "unknown": "No Date"}
     return f'<span class="status-badge status-{status}">{labels.get(status, status)}</span>'
+
+
+def _avg_runway(updates: pd.DataFrame) -> float:
+    valid = pd.to_numeric(updates["runway_months"], errors="coerce").dropna()
+    return round(valid.mean(), 1) if not valid.empty else 0
 
 
 # ---------------------------------------------------------------------------
@@ -539,8 +591,12 @@ updates_df = load_updates()
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.markdown("### Portfolio CRM")
-    st.caption("Manage portfolio companies, collect structured updates, and generate investor-ready reports.")
+    # Logo
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, use_container_width=True)
+    else:
+        st.markdown("### Enterprise Institute")
+    st.caption("Portfolio company updates, reporting & investor exports.")
     st.divider()
 
     total_companies = len(companies_df)
@@ -557,9 +613,19 @@ with st.sidebar:
         st.markdown(f"**Overdue:** :red[{overdue_count}]")
     else:
         st.markdown("**Overdue:** 0")
+    st.markdown(f"**Avg Runway:** {_avg_runway(updates_df)} months")
+
+    # Recent activity
+    if not updates_df.empty:
+        st.divider()
+        st.markdown("**Recent Activity**")
+        recent = updates_df.head(3)
+        for _, r in recent.iterrows():
+            sub_d = r["submission_date"].strftime("%b %d") if pd.notna(r["submission_date"]) else "?"
+            st.caption(f"{sub_d} — {r['company_name']}")
 
     st.divider()
-    st.caption("Data stored in Supabase (PostgreSQL).")
+    st.caption(f"Data stored in Supabase. Today is {date.today().strftime('%B %d, %Y')}.")
 
 # ---------------------------------------------------------------------------
 # Top metrics bar
@@ -568,10 +634,11 @@ with st.sidebar:
 st.markdown(f"## {APP_TITLE}")
 st.caption(APP_SUBTITLE)
 
-m1, m2, m3 = st.columns(3)
+m1, m2, m3, m4 = st.columns(4)
 m1.metric("Portfolio Companies", total_companies)
 m2.metric("Total Updates", total_updates)
 m3.metric("Updates Overdue", overdue_count, delta=f"-{overdue_count}" if overdue_count else None, delta_color="inverse")
+m4.metric("Avg Runway", f"{_avg_runway(updates_df)} mo")
 
 st.markdown("")  # spacer
 
@@ -626,14 +693,13 @@ with onboard_tab:
                 "is_active": True,
             }
             add_company(row)
-            st.success(f"**{company_name.strip()}** has been onboarded successfully.")
-            st.info(f"Access token: `{token}` — Share this securely with the company contact.")
+            st.toast(f"{company_name.strip()} onboarded successfully!", icon="✅")
             st.rerun()
 
     # Companies list with delete
     if not companies_df.empty:
         st.markdown("")
-        st.subheader("Portfolio Companies")
+        st.subheader(f"Portfolio Companies ({total_companies})")
 
         for _, comp_row in companies_df.iterrows():
             due_str = comp_row["next_due_date"].strftime("%Y-%m-%d") if pd.notna(comp_row["next_due_date"]) else "N/A"
@@ -649,7 +715,6 @@ with onboard_tab:
                     st.markdown(f"**Fund:** {comp_row['fund']}")
                     st.markdown(f"**Status:** {active_label}  |  **Token:** `{comp_row['access_token']}`")
 
-                # Delete with confirmation
                 confirm_key = f"confirm_del_company_{cid}"
                 if st.session_state.get(confirm_key):
                     st.warning(f"Are you sure you want to delete **{comp_row['company_name']}** and all its updates?")
@@ -657,6 +722,7 @@ with onboard_tab:
                     if yes_col.button("Yes, delete", key=f"yes_del_{cid}", type="primary"):
                         delete_company(cid)
                         st.session_state.pop(confirm_key, None)
+                        st.toast(f"{comp_row['company_name']} deleted.", icon="🗑️")
                         st.rerun()
                     if no_col.button("Cancel", key=f"no_del_{cid}"):
                         st.session_state.pop(confirm_key, None)
@@ -696,7 +762,12 @@ with submit_tab:
         revenue = f1.text_input("Revenue", placeholder="e.g. $150,000")
         expenses = f2.text_input("Expenses", placeholder="e.g. $120,000")
         cash = f3.text_input("Cash on Hand", placeholder="e.g. $500,000")
-        runway_months = f4.number_input("Runway (months)", min_value=0, max_value=60, value=6)
+        runway_months = f4.number_input("Runway (months)", min_value=0, max_value=120, value=6)
+
+        if runway_months <= 3:
+            st.warning("Runway is critically low (3 months or less).")
+        elif runway_months <= 6:
+            st.info("Runway is below 6 months. Consider flagging for discussion.")
 
         st.markdown("---")
         st.markdown("### Progress & Challenges")
@@ -762,16 +833,14 @@ with submit_tab:
                 }
                 add_update(payload)
 
-                # Update next due date
                 comp_cadence = company_lookup[selected_company]["reporting_cadence"]
                 update_company_due_date(
                     company_lookup[selected_company]["company_id"],
                     str(next_due_from_today(comp_cadence)),
                 )
 
-                st.success(f"Update for **{selected_company}** saved successfully.")
+                st.toast(f"Update for {selected_company} saved!", icon="✅")
 
-                # Generate PDF for immediate download
                 pdf_bytes = generate_pdf_bytes(payload)
                 slug = _safe_pdf_slug(selected_company)
                 st.download_button(
@@ -809,9 +878,9 @@ with sequences_tab:
                 on_track_list.append(row)
 
         s1, s2, s3 = st.columns(3)
-        s1.markdown(f"**:red[Overdue]** — {len(overdue_list)} companies")
-        s2.markdown(f"**:orange[Due Soon]** — {len(upcoming_list)} companies")
-        s3.markdown(f"**:green[On Track]** — {len(on_track_list)} companies")
+        s1.metric("Overdue", len(overdue_list))
+        s2.metric("Due Soon", len(upcoming_list))
+        s3.metric("On Track", len(on_track_list))
 
         st.markdown("---")
 
@@ -840,7 +909,39 @@ with dashboard_tab:
     if updates_df.empty:
         st.info("No updates have been submitted yet. Use the **Submit Update** tab to add your first report.")
     else:
-        # Search and filter controls
+        # ---- Analytics section ----
+        st.markdown("### Portfolio Analytics")
+
+        # Update frequency chart
+        chart_df = updates_df.copy()
+        chart_df["month"] = chart_df["submission_date"].dt.to_period("M").astype(str)
+        monthly_counts = chart_df.groupby("month").size().reset_index(name="Updates")
+
+        if len(monthly_counts) >= 2:
+            freq_chart = (
+                alt.Chart(monthly_counts)
+                .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#3b82f6")
+                .encode(
+                    x=alt.X("month:N", title="Month", sort=None),
+                    y=alt.Y("Updates:Q", title="Updates Submitted"),
+                    tooltip=["month", "Updates"],
+                )
+                .properties(height=220)
+            )
+            st.altair_chart(freq_chart, use_container_width=True)
+
+        # Runway distribution
+        runway_vals = pd.to_numeric(updates_df["runway_months"], errors="coerce").dropna()
+        if not runway_vals.empty:
+            r1, r2, r3 = st.columns(3)
+            r1.metric("Avg Runway", f"{runway_vals.mean():.1f} mo")
+            r2.metric("Min Runway", f"{runway_vals.min():.0f} mo")
+            r3.metric("Max Runway", f"{runway_vals.max():.0f} mo")
+
+        st.markdown("---")
+
+        # ---- Search and filter controls ----
+        st.markdown("### Update History")
         filter_col1, filter_col2 = st.columns([3, 1])
         with filter_col1:
             search = st.text_input(
@@ -924,7 +1025,13 @@ with dashboard_tab:
                         st.markdown(f"**Revenue:** {row['revenue'] or 'N/A'}")
                         st.markdown(f"**Expenses:** {row['expenses'] or 'N/A'}")
                         st.markdown(f"**Cash:** {row['cash'] or 'N/A'}")
-                        st.markdown(f"**Runway:** {row['runway_months']} months")
+                        runway_val = int(row['runway_months']) if row['runway_months'] else 0
+                        if runway_val <= 3:
+                            st.markdown(f"**Runway:** :red[{runway_val} months]")
+                        elif runway_val <= 6:
+                            st.markdown(f"**Runway:** :orange[{runway_val} months]")
+                        else:
+                            st.markdown(f"**Runway:** :green[{runway_val} months]")
                     with d2:
                         st.markdown(f"**Submitted By:** {row['submitted_by']}")
                         st.markdown(f"**Date:** {sub_date}")
@@ -943,7 +1050,6 @@ with dashboard_tab:
                     # Actions row: PDF download + delete
                     act1, act2, _ = st.columns([1, 1, 2])
                     with act1:
-                        # Generate PDF on-demand from stored data
                         pdf_data = row.to_dict()
                         pdf_bytes = generate_pdf_bytes(pdf_data)
                         slug = _safe_pdf_slug(str(row.get("company_name", "company")))
@@ -963,6 +1069,7 @@ with dashboard_tab:
                             if y_col.button("Yes", key=f"yes_del_u_{uid}", type="primary"):
                                 delete_update(uid)
                                 st.session_state.pop(confirm_key, None)
+                                st.toast("Update deleted.", icon="🗑️")
                                 st.rerun()
                             if n_col.button("No", key=f"no_del_u_{uid}"):
                                 st.session_state.pop(confirm_key, None)
