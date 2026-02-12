@@ -714,11 +714,71 @@ def generate_pdf_bytes(update_data: dict) -> bytes:
     return bytes(pdf.output())
 
 
-def generate_bulk_pdf_bytes(updates: pd.DataFrame) -> bytes:
-    """Generate a single PDF containing all updates, one per page."""
+def generate_bulk_pdf_bytes(updates: pd.DataFrame, companies: pd.DataFrame | None = None) -> bytes:
+    """Generate a single PDF with a cover page summary + one page per update."""
     pdf = UpdatePDF()
     pdf.set_auto_page_break(auto=True, margin=18)
 
+    # ---- Cover page ----
+    pdf.add_page()
+    pdf.ln(10)
+    if os.path.exists(LOGO_PATH):
+        pdf.image(LOGO_PATH, x=(pdf.w - 50) / 2, y=pdf.get_y(), w=50)
+        pdf.ln(30)
+    pdf.set_font("helvetica", "B", 26)
+    pdf.set_text_color(*_DARK)
+    pdf.cell(0, 14, "Portfolio Report", align="C", ln=True)
+    pdf.set_font("helvetica", "", 12)
+    pdf.set_text_color(*_SLATE)
+    pdf.cell(0, 8, f"Enterprise Institute   |   {datetime.now().strftime('%B %d, %Y')}", align="C", ln=True)
+    pdf.ln(12)
+
+    # Summary stats
+    pdf.set_draw_color(*_GOLD)
+    pdf.set_line_width(0.4)
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+    pdf.ln(6)
+
+    num_companies = int(companies["company_name"].nunique()) if companies is not None and not companies.empty else int(updates["company_name"].nunique())
+    num_updates = len(updates)
+    runway_vals = pd.to_numeric(updates["runway_months"], errors="coerce").dropna()
+    avg_runway = f"{runway_vals.mean():.1f}" if not runway_vals.empty else "N/A"
+    min_runway = f"{runway_vals.min():.0f}" if not runway_vals.empty else "N/A"
+    max_runway = f"{runway_vals.max():.0f}" if not runway_vals.empty else "N/A"
+    red = int((runway_vals <= 3).sum()) if not runway_vals.empty else 0
+    yellow = int(((runway_vals > 3) & (runway_vals <= 6)).sum()) if not runway_vals.empty else 0
+    green = int((runway_vals > 6).sum()) if not runway_vals.empty else 0
+
+    pdf._section_heading("Portfolio Overview")
+    summary_rows = [
+        ("Total Companies", str(num_companies)),
+        ("Total Updates", str(num_updates)),
+        ("Avg Runway", f"{avg_runway} months"),
+        ("Min / Max Runway", f"{min_runway} / {max_runway} months"),
+        ("Healthy (>6 mo)", str(green)),
+        ("Watch (3-6 mo)", str(yellow)),
+        ("Critical (<=3 mo)", str(red)),
+    ]
+    try:
+        pdf._kpi_table(summary_rows)
+    except FPDFException:
+        for label, val in summary_rows:
+            pdf._info_row(label, val)
+
+    # Table of contents
+    if not updates.empty:
+        pdf.ln(6)
+        pdf._section_heading("Updates Included")
+        pdf.set_font("helvetica", "", 9)
+        pdf.set_text_color(*_SLATE)
+        for i, (_, r) in enumerate(updates.iterrows(), 1):
+            cname = str(r.get("company_name", ""))
+            period = str(r.get("reporting_period", ""))
+            sdate = _format_date(r.get("submission_date"))
+            line = f"{i}.  {cname}  —  {period}  ({sdate})"
+            pdf.cell(0, 5, line, ln=True)
+
+    # ---- Individual update pages ----
     for _, row in updates.iterrows():
         data = row.to_dict()
         pdf.add_page()
@@ -889,6 +949,20 @@ def reminder_text(company_name: str, cadence: str, due_date: str) -> str:
     )
 
 
+def _build_eml(to_email: str, company_name: str, cadence: str, due_date: str) -> str:
+    """Build an RFC 2822 .eml file string for a reminder email."""
+    subject = f"Reminder: {company_name} {cadence} Update Due {due_date}"
+    body = reminder_text(company_name, cadence, due_date)
+    return (
+        f"To: {to_email}\r\n"
+        f"Subject: {subject}\r\n"
+        f"Content-Type: text/plain; charset=utf-8\r\n"
+        f"X-Mailer: Enterprise Institute CRM\r\n"
+        f"\r\n"
+        f"{body}\r\n"
+    )
+
+
 def _due_status(due_date, today) -> str:
     if due_date is None:
         return "unknown"
@@ -1045,6 +1119,7 @@ with onboard_tab:
             }
             add_company(row)
             st.toast(f"{company_name.strip()} onboarded successfully!", icon="✅")
+            st.balloons()
             st.rerun()
 
     # ---- CSV Bulk Import ----
@@ -1136,6 +1211,7 @@ with onboard_tab:
                         except Exception as exc:
                             st.warning(f"Failed to import **{r['company_name']}**: {exc}")
                     st.toast(f"{added} companies imported successfully!", icon="✅")
+                    st.balloons()
                     st.rerun()
 
     # Build a lookup for last update date per company
@@ -1150,6 +1226,29 @@ with onboard_tab:
     if not companies_df.empty:
         st.markdown("")
         st.subheader(f"Portfolio Companies ({total_companies})")
+
+        # Sortable overview table
+        _table_df = companies_df.copy()
+        _table_df["next_due_date"] = _table_df["next_due_date"].dt.strftime("%Y-%m-%d")
+        _table_df["last_update"] = _table_df["company_id"].map(_last_update_map).fillna("—")
+        st.dataframe(
+            _table_df[["company_name", "contact_name", "contact_email", "portfolio_manager", "fund", "reporting_cadence", "next_due_date", "last_update"]].rename(
+                columns={
+                    "company_name": "Company",
+                    "contact_name": "Contact",
+                    "contact_email": "Email",
+                    "portfolio_manager": "PM",
+                    "fund": "Fund",
+                    "reporting_cadence": "Cadence",
+                    "next_due_date": "Next Due",
+                    "last_update": "Last Update",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("Click column headers to sort. Expand a company below for details and actions.")
+        st.markdown("")
 
         for _, comp_row in companies_df.iterrows():
             due_str = comp_row["next_due_date"].strftime("%Y-%m-%d") if pd.notna(comp_row["next_due_date"]) else "N/A"
@@ -1292,6 +1391,7 @@ with submit_tab:
                 )
 
                 st.toast(f"Update for {selected_company} saved!", icon="✅")
+                st.balloons()
 
                 pdf_bytes = generate_pdf_bytes(payload)
                 slug = _safe_pdf_slug(selected_company)
@@ -1354,6 +1454,19 @@ with sequences_tab:
                 msg = reminder_text(row["company_name"], row["reporting_cadence"], str(due_date))
                 st.code(msg, language=None)
 
+                eml_content = _build_eml(
+                    row["contact_email"], row["company_name"],
+                    row["reporting_cadence"], str(due_date),
+                )
+                eml_slug = _safe_pdf_slug(row["company_name"])
+                st.download_button(
+                    "Download as .eml",
+                    data=eml_content.encode("utf-8"),
+                    file_name=f"reminder_{eml_slug}_{due_date}.eml",
+                    mime="message/rfc822",
+                    key=f"eml_{row['company_id']}",
+                )
+
 # ---- TAB 4: Dashboard & PDF Exports ----
 with dashboard_tab:
     st.subheader("Investment Dashboard")
@@ -1361,6 +1474,42 @@ with dashboard_tab:
     if updates_df.empty:
         st.info("No updates have been submitted yet. Use the **Submit Update** tab to add your first report.")
     else:
+        # ---- Portfolio Health Scorecard ----
+        st.markdown("### Portfolio Health")
+        latest_per_company = updates_df.sort_values("submission_date", ascending=False).drop_duplicates("company_id", keep="first")
+        runway_numeric = pd.to_numeric(latest_per_company["runway_months"], errors="coerce")
+        red_count = int((runway_numeric <= 3).sum())
+        yellow_count = int(((runway_numeric > 3) & (runway_numeric <= 6)).sum())
+        green_count = int((runway_numeric > 6).sum())
+        no_data_count = int(runway_numeric.isna().sum())
+
+        hc1, hc2, hc3, hc4 = st.columns(4)
+        hc1.markdown(
+            f'<div style="background:#052e16;border:1px solid #14532d;border-radius:10px;padding:1rem;text-align:center;">'
+            f'<div style="color:#4ade80;font-size:2rem;font-weight:700;">{green_count}</div>'
+            f'<div style="color:#86efac;font-size:0.8rem;font-weight:600;text-transform:uppercase;">Healthy (&gt;6 mo)</div></div>',
+            unsafe_allow_html=True,
+        )
+        hc2.markdown(
+            f'<div style="background:#451a03;border:1px solid #78350f;border-radius:10px;padding:1rem;text-align:center;">'
+            f'<div style="color:#fbbf24;font-size:2rem;font-weight:700;">{yellow_count}</div>'
+            f'<div style="color:#fde68a;font-size:0.8rem;font-weight:600;text-transform:uppercase;">Watch (3-6 mo)</div></div>',
+            unsafe_allow_html=True,
+        )
+        hc3.markdown(
+            f'<div style="background:#451a1a;border:1px solid #7f1d1d;border-radius:10px;padding:1rem;text-align:center;">'
+            f'<div style="color:#f87171;font-size:2rem;font-weight:700;">{red_count}</div>'
+            f'<div style="color:#fca5a5;font-size:0.8rem;font-weight:600;text-transform:uppercase;">Critical (&le;3 mo)</div></div>',
+            unsafe_allow_html=True,
+        )
+        hc4.markdown(
+            f'<div style="background:#1e293b;border:1px solid #334155;border-radius:10px;padding:1rem;text-align:center;">'
+            f'<div style="color:#94a3b8;font-size:2rem;font-weight:700;">{no_data_count}</div>'
+            f'<div style="color:#64748b;font-size:0.8rem;font-weight:600;text-transform:uppercase;">No Data</div></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+
         # ---- Analytics section ----
         st.markdown("### Portfolio Analytics")
 
@@ -1554,7 +1703,7 @@ with dashboard_tab:
                 use_container_width=True,
             )
         with e3:
-            bulk_pdf = generate_bulk_pdf_bytes(updates_df)
+            bulk_pdf = generate_bulk_pdf_bytes(updates_df, companies_df)
             st.download_button(
                 "All Updates (PDF Report)",
                 data=bulk_pdf,
