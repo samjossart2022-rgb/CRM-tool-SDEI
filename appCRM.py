@@ -433,7 +433,7 @@ def generate_pdf_bytes(update_data: dict) -> bytes:
         except FPDFException:
             pdf.add_section(title, _normalize_pdf_text(value).encode("ascii", "replace").decode("ascii"))
 
-    return pdf.output()
+    return bytes(pdf.output())
 
 
 # ---------------------------------------------------------------------------
