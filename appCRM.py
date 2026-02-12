@@ -360,78 +360,202 @@ def _safe_pdf_slug(raw: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in raw).strip("_") or "company"
 
 
+def _format_date(raw) -> str:
+    """Turn a datetime/string into a clean 'Month DD, YYYY' date."""
+    if raw is None:
+        return "N/A"
+    text = str(raw).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], fmt).strftime("%B %d, %Y")
+        except ValueError:
+            continue
+    return text
+
+
+# Colour palette
+_GOLD = (166, 142, 100)
+_DARK = (15, 23, 42)
+_SLATE = (71, 85, 105)
+_LIGHT_GRAY = (241, 245, 249)
+_WHITE = (255, 255, 255)
+_TABLE_BORDER = (203, 213, 225)
+
+
 class UpdatePDF(FPDF):
     def header(self):
-        # Logo in top-left if available
+        # Gold bar across the top
+        self.set_fill_color(*_GOLD)
+        self.rect(0, 0, self.w, 3, style="F")
+
+        # Logo
         if os.path.exists(LOGO_PATH):
-            self.image(LOGO_PATH, x=10, y=8, h=12)
-            self.set_x(35)
-        self.set_font("helvetica", "B", 14)
-        self.set_text_color(15, 23, 42)
-        self.cell(0, 10, "Enterprise Institute  |  Portfolio Update", align="L" if os.path.exists(LOGO_PATH) else "C")
-        self.ln(6)
-        self.set_draw_color(166, 142, 100)  # Gold accent
-        self.set_line_width(0.5)
+            self.image(LOGO_PATH, x=self.l_margin, y=8, h=14)
+            self.set_x(self.l_margin + 28)
+        else:
+            self.set_xy(self.l_margin, 8)
+        self.set_font("helvetica", "B", 16)
+        self.set_text_color(*_DARK)
+        self.cell(0, 8, "Enterprise Institute", ln=True)
+        if os.path.exists(LOGO_PATH):
+            self.set_x(self.l_margin + 28)
+        self.set_font("helvetica", "", 9)
+        self.set_text_color(*_SLATE)
+        self.cell(0, 5, "Portfolio Company Update Report", ln=True)
+        self.ln(4)
+        self.set_draw_color(*_GOLD)
+        self.set_line_width(0.4)
         self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
-        self.ln(8)
-
-    def add_section(self, title: str, value: str):
-        safe_title = _normalize_pdf_text(title)
-        safe_value = _normalize_pdf_text(value)
-        usable_width = max(self.w - self.l_margin - self.r_margin, 10)
-
-        self.set_x(self.l_margin)
-        self.set_font("helvetica", "B", 11)
-        self.set_text_color(30, 41, 59)
-        self.multi_cell(usable_width, 7, safe_title)
-
-        self.set_x(self.l_margin)
-        self.set_font("helvetica", "", 10)
-        self.set_text_color(71, 85, 105)
-        self.multi_cell(usable_width, 6, safe_value, wrapmode="CHAR")
-        self.ln(3)
+        self.ln(6)
 
     def footer(self):
-        self.set_y(-15)
-        self.set_font("helvetica", "I", 8)
-        self.set_text_color(148, 163, 184)
-        self.cell(
-            0, 10,
-            f"Enterprise Institute  |  Page {self.page_no()}  |  Generated {datetime.now().strftime('%Y-%m-%d')}",
-            align="C",
-        )
+        self.set_y(-12)
+        self.set_draw_color(*_GOLD)
+        self.set_line_width(0.3)
+        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.ln(2)
+        self.set_font("helvetica", "", 7)
+        self.set_text_color(*_SLATE)
+        self.cell(0, 5, "Enterprise Institute  |  Confidential", align="L")
+        self.cell(0, 5, f"Page {self.page_no()}  |  Generated {datetime.now().strftime('%B %d, %Y')}", align="R", ln=True)
+
+    # -- Layout helpers --
+
+    def _section_heading(self, title: str):
+        self.ln(2)
+        self.set_font("helvetica", "B", 11)
+        self.set_text_color(*_DARK)
+        self.cell(0, 7, title.upper(), ln=True)
+        self.set_draw_color(*_GOLD)
+        self.set_line_width(0.3)
+        self.line(self.l_margin, self.get_y(), self.l_margin + 40, self.get_y())
+        self.ln(3)
+
+    def _info_row(self, label: str, value: str):
+        w = self.w - self.l_margin - self.r_margin
+        self.set_font("helvetica", "B", 9)
+        self.set_text_color(*_SLATE)
+        self.cell(38, 6, label, ln=False)
+        self.set_font("helvetica", "", 10)
+        self.set_text_color(*_DARK)
+        self.multi_cell(w - 38, 6, _normalize_pdf_text(value), wrapmode="CHAR")
+
+    def _kpi_table(self, rows: list[tuple[str, str]]):
+        """Render a 2-column key-value table with alternating row shading."""
+        w = self.w - self.l_margin - self.r_margin
+        label_w = w * 0.35
+        value_w = w * 0.65
+        self.set_draw_color(*_TABLE_BORDER)
+        self.set_line_width(0.2)
+        for i, (label, value) in enumerate(rows):
+            if i % 2 == 0:
+                self.set_fill_color(*_LIGHT_GRAY)
+            else:
+                self.set_fill_color(*_WHITE)
+            y_before = self.get_y()
+            self.set_font("helvetica", "B", 9)
+            self.set_text_color(*_SLATE)
+            self.cell(label_w, 8, f"  {label}", border="LTB", fill=True)
+            self.set_font("helvetica", "", 10)
+            self.set_text_color(*_DARK)
+            self.cell(value_w, 8, f"  {_normalize_pdf_text(value)}", border="RTB", fill=True, ln=True)
+
+    def _text_block(self, label: str, value: str):
+        safe = _normalize_pdf_text(value)
+        if not safe or safe == "-":
+            return
+        w = self.w - self.l_margin - self.r_margin
+        self.set_font("helvetica", "B", 9)
+        self.set_text_color(*_SLATE)
+        self.cell(0, 6, label, ln=True)
+        self.set_font("helvetica", "", 10)
+        self.set_text_color(*_DARK)
+        self.multi_cell(w, 5.5, safe, wrapmode="CHAR")
+        self.ln(3)
 
 
 def generate_pdf_bytes(update_data: dict) -> bytes:
-    """Generate a PDF report in memory and return the raw bytes."""
+    """Generate a professional PDF report in memory and return raw bytes."""
     pdf = UpdatePDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_auto_page_break(auto=True, margin=18)
     pdf.add_page()
 
-    order = [
-        ("Company", update_data.get("company_name", "")),
-        ("Reporting Period", update_data.get("reporting_period", "")),
-        ("Submitted", update_data.get("submission_date", "")),
-        ("Submitted By", update_data.get("submitted_by", "")),
-        ("Revenue", update_data.get("revenue", "")),
-        ("Expenses", update_data.get("expenses", "")),
-        ("Cash", update_data.get("cash", "")),
-        ("Runway (months)", update_data.get("runway_months", "")),
-        ("Wins", update_data.get("wins", "")),
-        ("Challenges", update_data.get("challenges", "")),
-        ("Asks", update_data.get("asks", "")),
-        ("Investment Update", update_data.get("investment_update", "")),
-        ("Narrative", update_data.get("narrative", "")),
-        ("Meeting Agenda", update_data.get("meeting_agenda", "")),
-        ("Meeting Minutes", update_data.get("meeting_minutes", "")),
-        ("Data Warehouse Link", update_data.get("data_warehouse_link", "")),
-    ]
+    company = str(update_data.get("company_name", ""))
+    period = str(update_data.get("reporting_period", ""))
+    sub_date = _format_date(update_data.get("submission_date"))
+    sub_by = str(update_data.get("submitted_by", ""))
 
-    for title, value in order:
+    # ---- Report title block ----
+    pdf.set_font("helvetica", "B", 18)
+    pdf.set_text_color(*_DARK)
+    pdf.cell(0, 10, _normalize_pdf_text(company), ln=True)
+    pdf.set_font("helvetica", "", 10)
+    pdf.set_text_color(*_SLATE)
+    pdf.cell(0, 6, f"{_normalize_pdf_text(period)}   |   {sub_date}   |   Submitted by {_normalize_pdf_text(sub_by)}", ln=True)
+    pdf.ln(4)
+
+    # ---- Financial Summary ----
+    pdf._section_heading("Financial Summary")
+    kpi_rows = [
+        ("Revenue", str(update_data.get("revenue", ""))),
+        ("Expenses", str(update_data.get("expenses", ""))),
+        ("Cash on Hand", str(update_data.get("cash", ""))),
+        ("Runway", f"{update_data.get('runway_months', 'N/A')} months"),
+    ]
+    try:
+        pdf._kpi_table(kpi_rows)
+    except FPDFException:
+        for label, val in kpi_rows:
+            pdf._info_row(label, val)
+    pdf.ln(4)
+
+    # ---- Progress & Challenges ----
+    progress_fields = [
+        ("Wins & Highlights", update_data.get("wins", "")),
+        ("Challenges & Risks", update_data.get("challenges", "")),
+        ("Asks from Investors", update_data.get("asks", "")),
+        ("Investment Update", update_data.get("investment_update", "")),
+    ]
+    has_progress = any(_normalize_pdf_text(str(v)) not in ("", "-") for _, v in progress_fields)
+    if has_progress:
+        pdf._section_heading("Progress & Challenges")
+        for label, val in progress_fields:
+            try:
+                pdf._text_block(label, str(val))
+            except FPDFException:
+                pdf._text_block(label, _normalize_pdf_text(str(val)).encode("ascii", "replace").decode("ascii"))
+
+    # ---- Narrative ----
+    narrative = str(update_data.get("narrative", ""))
+    if _normalize_pdf_text(narrative) not in ("", "-"):
+        pdf._section_heading("Investor Narrative")
         try:
-            pdf.add_section(title, str(value))
+            pdf._text_block("", narrative)
         except FPDFException:
-            pdf.add_section(title, _normalize_pdf_text(value).encode("ascii", "replace").decode("ascii"))
+            pdf._text_block("", _normalize_pdf_text(narrative).encode("ascii", "replace").decode("ascii"))
+
+    # ---- Meetings ----
+    agenda = str(update_data.get("meeting_agenda", ""))
+    minutes = str(update_data.get("meeting_minutes", ""))
+    has_meetings = any(_normalize_pdf_text(v) not in ("", "-") for v in (agenda, minutes))
+    if has_meetings:
+        pdf._section_heading("Meetings")
+        try:
+            pdf._text_block("Agenda", agenda)
+            pdf._text_block("Minutes", minutes)
+        except FPDFException:
+            pass
+
+    # ---- Data link (only if provided) ----
+    link = str(update_data.get("data_warehouse_link", "")).strip()
+    if link and link != "-":
+        pdf.ln(2)
+        pdf.set_font("helvetica", "B", 9)
+        pdf.set_text_color(*_SLATE)
+        pdf.cell(38, 6, "Data Link", ln=False)
+        pdf.set_font("helvetica", "", 9)
+        pdf.set_text_color(59, 130, 246)
+        pdf.cell(0, 6, link, ln=True)
 
     return bytes(pdf.output())
 
